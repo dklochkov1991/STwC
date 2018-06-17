@@ -57,6 +57,9 @@
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
+TIM_HandleTypeDef htim6;
 
 osThreadId defaultTaskHandle;
 
@@ -68,16 +71,21 @@ osThreadId defaultTaskHandle;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
-void StartDefaultTask(void const *pvParameters);
+static void MX_TIM6_Init(void);
+void StartDefaultTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
-
+void convertInTemp (void *argument);
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
-
+uint32_t adc_buf;
+int temp;
+int flag;
+double temperature;
 /* USER CODE END 0 */
 
 /**
@@ -109,9 +117,15 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_ADC1_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
-
+	HAL_TIM_Base_Start(&htim6);
+	HAL_TIM_Base_Start_IT(&htim6);
+	HAL_ADC_Start_IT(&hadc1);
+	flag=0;
+	temperature=0xFFFF;
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -130,6 +144,7 @@ int main(void)
   /* definition and creation of defaultTask */
   osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
+	xTaskCreate(convertInTemp,"Convert",configMINIMAL_STACK_SIZE,NULL,1,NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -142,8 +157,8 @@ int main(void)
  
 
   /* Start scheduler */
-//  osKernelStart();
-  vTaskStartScheduler();
+  osKernelStart();
+  
   /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
@@ -197,7 +212,7 @@ void SystemClock_Config(void)
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV8;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
@@ -228,8 +243,8 @@ static void MX_ADC1_Init(void)
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc1.Init.ScanConvMode = DISABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.ScanConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
@@ -251,6 +266,45 @@ static void MX_ADC1_Init(void)
   {
     _Error_Handler(__FILE__, __LINE__);
   }
+
+}
+
+/* TIM6 init function */
+static void MX_TIM6_Init(void)
+{
+
+  TIM_MasterConfigTypeDef sMasterConfig;
+
+  htim6.Instance = TIM6;
+  htim6.Init.Prescaler = 42000;
+  htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim6.Init.Period = 1000;
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+
+}
+
+/** 
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void) 
+{
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA2_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 
 }
 
@@ -308,20 +362,36 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+{
+//	temp = adc_buf*.322;   // convert value from adc buffer to temperature in Centigrade
+	temp=HAL_ADC_GetValue(hadc);
+	flag=1;
+}
+
+void convertInTemp (void *argument)
+{
+	while(1)
+	{
+		if (flag!=0)
+		{
+			temperature=temp*5/20.48;
+			flag=0;
+		}
+		else osDelay(1);
+	}
+}
 /* USER CODE END 4 */
 
 /* StartDefaultTask function */
-void StartDefaultTask(void const *pvParameters)
+void StartDefaultTask(void const * argument)
 {
 
   /* USER CODE BEGIN 5 */
   /* Infinite loop */
   for(;;)
   {
-		HAL_ADC_Start(&hadc1);
-		HAL_ADC_PollForConversion(&hadc1,100);
-		uint32_t temp = (uint32_t) HAL_ADC_GetValue(&hadc1);
-		HAL_ADC_Stop(&hadc1);
 		HAL_GPIO_WritePin(GPIOD,LD4_Pin,GPIO_PIN_SET);
     osDelay(200);
 		HAL_GPIO_WritePin(GPIOD,LD4_Pin,GPIO_PIN_RESET);		
@@ -329,7 +399,7 @@ void StartDefaultTask(void const *pvParameters)
   }
   /* USER CODE END 5 */ 
 }
- 
+
 /**
   * @brief  Period elapsed callback in non blocking mode
   * @note   This function is called  when TIM1 interrupt took place, inside
